@@ -13,6 +13,8 @@ Output: dist/SnapType.exe  (~15-25 MB, no Python install required)
 import os, sys, subprocess, shutil
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 HERE = Path(__file__).parent
 DIST = HERE / "dist"
 BUILD = HERE / "build"
