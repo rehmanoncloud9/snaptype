@@ -70,7 +70,7 @@ Output: `dist/SnapType.exe`
 
 | Action | Default |
 |--------|---------|
-| Toggle on/off | Customizable in Settings |
+| Toggle on/off | `Ctrl+Shift+S` (Customizable) |
 | Undo last expansion | `Ctrl+Z` |
 
 ---
