@@ -20,3 +20,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Project Documentation
+SNAP TYPE PRD.md
