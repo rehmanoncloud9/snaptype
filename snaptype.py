@@ -22,7 +22,7 @@ if _sys.platform == "win32":
         except Exception:
             pass
 
-import base64, collections, io, json, os, re, subprocess, sys
+import base64, collections, datetime, io, json, os, re, subprocess, sys
 import threading, time, tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox, filedialog, simpledialog
@@ -243,21 +243,28 @@ class SnippetManager:
     def __init__(self):
         self.enabled = True
         raw = _load_json(SNIPPETS_FILE, None)
+        self.snippets = {}
         if isinstance(raw, dict) and raw:
-            self.snippets = raw
+            for k, v in raw.items():
+                if isinstance(v, str):
+                    self.snippets[k] = {"exp": v, "tags": ""}
+                else:
+                    self.snippets[k] = v
         else:
-            self.snippets = dict(DEFAULT_SNIPPETS)
+            for k, v in DEFAULT_SNIPPETS.items():
+                self.snippets[k] = {"exp": v, "tags": ""}
             self._save()
 
     def get(self, abbr: str):
         if not self.enabled: return None
-        return self.snippets.get(abbr.lower())
+        item = self.snippets.get(abbr.lower())
+        return item["exp"] if item else None
 
-    def upsert(self, abbr: str, expansion: str) -> bool:
+    def upsert(self, abbr: str, expansion: str, tags: str = "") -> bool:
         a, e = abbr.strip().lower(), expansion.strip()
         if not a or not e: return False
-        self.snippets[a] = e;
-        self._save();
+        self.snippets[a] = {"exp": e, "tags": tags.strip()}
+        self._save()
         return True
 
     def delete(self, abbr: str) -> bool:
@@ -268,22 +275,36 @@ class SnippetManager:
         return True
 
     def export_csv(self, path: str):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("abbreviation,expansion\n")
+        import csv
+        with open(path, "w", encoding="utf-8", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["abbreviation", "expansion", "tags"])
             for k, v in sorted(self.snippets.items()):
-                f.write(f"{k},{v}\n")
+                writer.writerow([k, v["exp"], v.get("tags", "")])
 
     def import_csv(self, path: str) -> int:
+        import csv
         n = 0
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                pts = line.strip().split(",", 1)
-                if len(pts) == 2 and pts[0] not in ("abbreviation", "abbr", ""):
-                    if self.upsert(pts[0], pts[1]): n += 1
+        with open(path, "r", encoding="utf-8", newline='') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) >= 2 and row[0] not in ("abbreviation", "abbr", ""):
+                    tags = row[2] if len(row) > 2 else ""
+                    if self.upsert(row[0], row[1], tags): n += 1
         return n
 
     def _save(self):
         _save_json(SNIPPETS_FILE, self.snippets)
+
+    def get_last_saved_time(self):
+        try:
+            import datetime, os
+            if not SNIPPETS_FILE.exists(): return "Never"
+            mtime = os.path.getmtime(SNIPPETS_FILE)
+            dt = datetime.datetime.fromtimestamp(mtime)
+            return dt.strftime("%b %d, %I:%M %p")
+        except:
+            return "Unknown"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -375,9 +396,11 @@ def _poll_window() -> str:
         return ""
 
 
+_tracker_running = True
+
 def _window_tracker():
-    global _ext_window
-    while True:
+    global _ext_window, _tracker_running
+    while _tracker_running:
         t = _poll_window()
         if t and APP_NAME not in t: _ext_window = t
         time.sleep(0.6)
@@ -456,6 +479,37 @@ class Engine:
         except:
             pass
 
+    def _process_expansion(self, word, exp):
+        # Dynamic Variables
+        if "{{date}}" in exp:
+            exp = exp.replace("{{date}}", datetime.date.today().strftime("%Y-%m-%d"))
+            
+        if "{{time}}" in exp:
+            exp = exp.replace("{{time}}", datetime.datetime.now().strftime("%I:%M %p"))
+            
+        if "{{clipboard}}" in exp:
+            clip = ""
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.OpenClipboard(0)
+                    pcontents = ctypes.windll.user32.GetClipboardData(13) # CF_UNICODETEXT
+                    if pcontents:
+                        clip = ctypes.c_wchar_p(pcontents).value
+                    ctypes.windll.user32.CloseClipboard()
+                except:
+                    try: ctypes.windll.user32.CloseClipboard()
+                    except: pass
+            exp = exp.replace("{{clipboard}}", clip or "")
+
+        # Case Preservation
+        if word.isupper() and len(word) > 1:
+            exp = exp.upper()
+        elif word.istitle() or (word.isupper() and len(word) == 1):
+            exp = exp[:1].upper() + exp[1:] if exp else exp
+            
+        return exp
+
     def _on_key(self, ev):
         name = ev.name or ""
         if keyboard.is_pressed("alt"): self._buf = ""; return
@@ -469,6 +523,7 @@ class Engine:
                 key = word.lower()
                 exp = self.sm.get(key)
                 if exp:
+                    exp = self._process_expansion(word, exp)
                     trig = (" " if name == "space" else "\n" if name == "enter"
                     else "\t" if name == "tab" else name)
                     self._last = {"orig": word, "exp": exp, "trig": trig}
@@ -654,6 +709,32 @@ def _entry(parent, var=None, placeholder="", **kwargs):
     return entry
 
 
+def _text_area(parent, placeholder="", height=4, **kwargs):
+    """Modern text area with placeholder"""
+    text = tk.Text(parent, bg=SURFACE, fg=TEXT, insertbackground=TEXT, 
+                   relief="flat", font=("Segoe UI", 10), height=height, **kwargs)
+    
+    if placeholder:
+        text.insert("1.0", placeholder)
+        text.config(fg=SUBTEXT)
+        
+        def on_focus_in(e):
+            if text.get("1.0", "end-1c") == placeholder:
+                text.delete("1.0", "end")
+                text.config(fg=TEXT)
+                
+        def on_focus_out(e):
+            if not text.get("1.0", "end-1c").strip():
+                text.delete("1.0", "end")
+                text.insert("1.0", placeholder)
+                text.config(fg=SUBTEXT)
+                
+        text.bind("<FocusIn>", on_focus_in)
+        text.bind("<FocusOut>", on_focus_out)
+        
+    return text
+
+
 def _create_tooltip(widget, text):
     """Create a tooltip for a widget"""
 
@@ -797,7 +878,7 @@ def _tree_style(name, row_h=32):
 # ════════════════════════════════════════════════════════════════════════════
 
 def _make_logo(size=256) -> "Image.Image":
-    """Enhanced SB monogram with modern design"""
+    """Enhanced ST monogram with modern design"""
     sc = 4
     hi = size * sc
     img = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
@@ -986,8 +1067,36 @@ class SnapTypeApp:
         self.engine.setup(toggle_fn=self.toggle)
         self._nav("Dashboard")
 
+        if not self.cfg.get("consent_given"):
+            msg = ("Privacy Disclosure:\n\n"
+                   "SnapType polls the active window title so the 'App Rules' feature "
+                   "(whitelisting/blacklisting apps) can work.\n\n"
+                   "This runs entirely offline on your machine—nothing is tracked or sent anywhere.\n\n"
+                   "Click OK to acknowledge and continue.")
+            messagebox.showinfo("First Run Disclosure", msg, parent=self.root)
+            self.cfg.set("consent_given", True)
+            # Show onboarding after consent
+            self.root.after(500, self._show_onboarding_tour)
+
         threading.Thread(target=self._run_tray, daemon=True).start()
         threading.Thread(target=_window_tracker, daemon=True).start()
+
+    def _show_onboarding_tour(self):
+        steps = [
+            ("Welcome to SnapType! ⚡", "SnapType runs silently in the background. Whenever you type a short abbreviation (like 'omw'), it instantly expands into a full phrase ('on my way').\n\nLet's take a quick 3-step tour!"),
+            ("Step 1: Snippets 📝", "The Snippets tab is where you create your custom shortcuts.\n\nPro tip: You can use dynamic variables like {{date}} or {{time}} in your expansions!"),
+            ("Step 2: Stats 📊", "Curious how much time you're saving? The Stats tab tracks every expansion and shows you which snippets you use the most."),
+            ("Step 3: App Rules 🛡️", "Don't want SnapType running in your password manager or a game?\nUse the App Rules tab to whitelist or blacklist specific applications.\n\nYou're all set!")
+        ]
+        
+        for i, (title, desc) in enumerate(steps):
+            btn_text = "Finish" if i == len(steps) - 1 else "Next"
+            # We use a simple messagebox series for the tour to keep it lightweight and robust
+            messagebox.showinfo(title, desc + f"\n\n({i+1}/{len(steps)})", parent=self.root)
+            if i == 0: self._nav("Dashboard")
+            elif i == 1: self._nav("Snippets")
+            elif i == 2: self._nav("Stats")
+            elif i == 3: self._nav("App Rules")
 
     # ──────────────────────────────────────────────────────────────────────
     #  Enhanced Skeleton
@@ -1445,6 +1554,9 @@ class SnapTypeApp:
                        icon="📥", style="secondary").pack(side="left", padx=5)
         _modern_button(button_frame, "Export CSV", self._snip_export_csv,
                        icon="📤", style="secondary").pack(side="left", padx=5)
+                       
+        self._snip_backup_lbl = tk.Label(controls, text="", bg=CARD, fg=SUBTEXT, font=("Segoe UI", 9))
+        self._snip_backup_lbl.pack(side="right", padx=15)
 
         # Search bar
         search_card = _card(p)
@@ -1497,12 +1609,14 @@ class SnapTypeApp:
         tree_frame = tk.Frame(tree_card, bg=CARD)
         tree_frame.pack(fill="both", expand=True, padx=15, pady=15)
 
-        self._snip_tree = ttk.Treeview(tree_frame, columns=("abbr", "expansion"),
+        self._snip_tree = ttk.Treeview(tree_frame, columns=("abbr", "expansion", "tags"),
                                        show="headings", style="SN.Treeview", height=12)
         self._snip_tree.heading("abbr", text="Abbreviation", anchor="w")
         self._snip_tree.heading("expansion", text="Expands to", anchor="w")
-        self._snip_tree.column("abbr", width=150, anchor="w")
-        self._snip_tree.column("expansion", width=450, anchor="w")
+        self._snip_tree.heading("tags", text="Tags", anchor="w")
+        self._snip_tree.column("abbr", width=120, anchor="w")
+        self._snip_tree.column("expansion", width=380, anchor="w")
+        self._snip_tree.column("tags", width=100, anchor="w")
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self._snip_tree.yview)
         self._snip_tree.configure(yscrollcommand=scrollbar.set)
@@ -1537,12 +1651,23 @@ class SnapTypeApp:
         exp_frame.pack(fill="x", pady=5)
 
         tk.Label(exp_frame, text="Expansion:", bg=CARD, fg=SUBTEXT,
+                 font=("Segoe UI", 10), width=12, anchor="nw").pack(side="left")
+
+        self._snip_exp_text = _text_area(exp_frame, width=50, height=3,
+                                         placeholder="e.g., on my way\n(Supports multiple lines)")
+        self._snip_exp_text.pack(side="left", padx=(10, 0), pady=5)
+
+        # Tags field
+        tags_frame = tk.Frame(form, bg=CARD)
+        tags_frame.pack(fill="x", pady=5)
+
+        tk.Label(tags_frame, text="Tags:", bg=CARD, fg=SUBTEXT,
                  font=("Segoe UI", 10), width=12, anchor="w").pack(side="left")
 
-        self._snip_exp_var = tk.StringVar()
-        exp_entry = _entry(exp_frame, self._snip_exp_var, width=50,
-                           placeholder="e.g., on my way")
-        exp_entry.pack(side="left", padx=(10, 0), ipady=5)
+        self._snip_tags_var = tk.StringVar()
+        tags_entry = _entry(tags_frame, self._snip_tags_var, width=50,
+                            placeholder="e.g., Casual, Work, Code")
+        tags_entry.pack(side="left", padx=(10, 0), ipady=5)
 
         # Action buttons
         action_frame = tk.Frame(form, bg=CARD)
@@ -1577,32 +1702,48 @@ class SnapTypeApp:
 
         self._snip_tree.delete(*self._snip_tree.get_children())
 
-        for abbr, exp in sorted(self.sm.snippets.items()):
-            if q in abbr or q in exp.lower():
-                self._snip_tree.insert("", "end", iid=abbr, values=(abbr, exp))
+        for abbr, val in sorted(self.sm.snippets.items()):
+            exp = val["exp"]
+            tags = val.get("tags", "")
+            if q in abbr or q in exp.lower() or q in tags.lower():
+                display_exp = exp.replace('\n', ' ↵ ')
+                self._snip_tree.insert("", "end", iid=abbr, values=(abbr, display_exp, tags))
 
         n = len(self.sm.snippets)
         if hasattr(self, "_snip_count_var"):
             self._snip_count_var.set(f"{n} snippet{'s' if n != 1 else ''}")
+            
+        if hasattr(self, "_snip_backup_lbl"):
+            self._snip_backup_lbl.config(text=f"Last saved: {self.sm.get_last_saved_time()}")
 
     def _snip_on_select(self, _=None):
         sel = self._snip_tree.selection()
         if sel:
-            abbr, exp = self._snip_tree.item(sel[0], "values")
-            self._snip_abbr_var.set(abbr)
-            self._snip_exp_var.set(exp)
+            abbr = self._snip_tree.item(sel[0], "values")[0]
+            val = self.sm.snippets.get(abbr)
+            if val:
+                self._snip_abbr_var.set(abbr)
+                self._snip_exp_text.delete("1.0", tk.END)
+                self._snip_exp_text.insert("1.0", val["exp"])
+                self._snip_exp_text.config(fg=TEXT)
+                self._snip_tags_var.set(val.get("tags", ""))
 
     def _snip_upsert(self):
         a = self._snip_abbr_var.get().strip()
-        e = self._snip_exp_var.get().strip()
+        e = self._snip_exp_text.get("1.0", "end-1c").strip()
+        t = self._snip_tags_var.get().strip()
+        
+        # Handle placeholder case
+        if e == "e.g., on my way\n(Supports multiple lines)":
+            e = ""
 
         if not a or not e:
-            self._snip_st("⚠️ Both fields are required.", YELLOW)
+            self._snip_st("⚠️ Both Abbreviation and Expansion are required.", YELLOW)
             return
 
         existed = a.lower() in self.sm.snippets
 
-        if self.sm.upsert(a, e):
+        if self.sm.upsert(a, e, t):
             self._snip_st(f"✅ {'Updated' if existed else 'Added'}: {a.lower()} → {e}", GREEN)
             self._snip_clear()
             self._refresh_snippet_tree()
@@ -1626,8 +1767,14 @@ class SnapTypeApp:
 
     def _snip_clear(self):
         self._snip_abbr_var.set("")
-        self._snip_exp_var.set("")
-        self._snip_tree.selection_remove(*self._snip_tree.selection())
+        self._snip_tags_var.set("")
+        self._snip_exp_text.delete("1.0", tk.END)
+        # Re-trigger placeholder logic by shifting focus out (manually simulated)
+        placeholder = "e.g., on my way\n(Supports multiple lines)"
+        self._snip_exp_text.insert("1.0", placeholder)
+        self._snip_exp_text.config(fg=SUBTEXT)
+        if self._snip_tree.selection():
+            self._snip_tree.selection_remove(*self._snip_tree.selection())
 
     def _snip_st(self, msg, color=SUBTEXT):
         self._snip_status_var.set(msg)
@@ -2182,6 +2329,8 @@ class SnapTypeApp:
             self.root.after(0, self.toggle)
 
         def _quit(*_):
+            global _tracker_running
+            _tracker_running = False
             self.engine.stop()
             self.icon.stop()
             self.root.after(0, self.root.destroy)
