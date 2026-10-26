@@ -1,0 +1,28 @@
+[project]
+name = "snaptype"
+version = "1.5.0"
+description = "Instant, fully local text expander for Windows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.setuptools]
+packages = ["snapcore", "snapui", "snapui.pages"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["build", "dist", "build_assets"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+[tool.ruff.lint.per-file-ignores]
+# The Tk layout code is intentionally dense: long argument lists read better on one line.
+"snapui/**" = ["E501"]
+# The entry point sets DPI awareness before importing anything that touches Tk.
+"snaptype.py" = ["E402"]
+# Test doubles are written compactly.
+"tests/**" = ["E501", "E701", "E702"]

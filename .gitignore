@@ -23,3 +23,9 @@ Thumbs.db
 
 # Project Documentation
 SNAP TYPE PRD.md
+
+# Build / test artifacts
+build_assets/
+.pytest_cache/
+.ruff_cache/
+*.corrupt-*
