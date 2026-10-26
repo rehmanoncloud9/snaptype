@@ -230,6 +230,8 @@ def test_try_it_box_only_unblocks_own_window_while_focused(app):
 
 def test_sidebar_collapses_on_narrow_windows(app):
     from snapui.theme import dp
+    # Tk's default maximum follows the desktop size on hosted Windows runners.
+    app.root.maxsize(dp(1600), dp(1000))
     app.root.geometry(f"{dp(900)}x{dp(650)}")
     app.root.update()
     app._apply_layout()
